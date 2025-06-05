@@ -49,6 +49,7 @@ Este bot está diseñado para gestionar un sistema de **rangos progresivos** tip
 ```bash
 docker build -t gremio-bot .
 docker run -d --name bot --env DISCORD_TOKEN=tu_token_aqui gremio-bot
+```
 
 ### Ejecución_Windows
 ```bash
