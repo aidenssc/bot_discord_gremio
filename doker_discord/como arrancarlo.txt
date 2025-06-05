@@ -1,0 +1,13 @@
+para el token de discord os vais a la siguiente pagina
+https://discord.com/developers/applications
+y dentro de allí creáis el bot y le dais permisos de administrador luego para el token de dais a regenerar token y listo ya tenéis el token
+ 
+en Docker Desktop (Windows) os abrís una terminal primero os metéis a la carpeta descomprimida y luego poneis los siguientes comandos
+
+docker build -t medieval-bot .
+
+docker run -d --name bot -e DISCORD_TOKEN="TOKEN_DISCORD" -v "${PWD}\perfiles.json:/app/perfiles.json" -v "${PWD}\flags.json:/app/flags.json" medieval-bot
+
+luego en OAuth2 le volveis a dar los permisos de administrador cuando tengáis el Docker arrancado y marcáis la casilla de bot con eso abajo del todo se os genera un enlace para poder añadir el bot a un servidor vuestro (preferiblemente uno de prueba para testear) 
+
+y con !help os salen todos los comandos del bot de administración 
