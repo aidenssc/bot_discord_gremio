@@ -53,5 +53,6 @@ docker run -d --name bot --env DISCORD_TOKEN=tu_token_aqui gremio-bot
 
 ### Ejecución_Windows
 ```bash
-docker build -t gremio-bot .
+docker build -t medieval-bot .
 docker run -d --name bot -e DISCORD_TOKEN="DC_TOKEN" -v "${PWD}\perfiles.json:/app/perfiles.json" -v "${PWD}\flags.json:/app/flags.json" medieval-bot
+```
