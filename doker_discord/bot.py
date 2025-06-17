@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from discord.utils import get
 from PIL import Image, ImageDraw, ImageFont
 import json, os, requests
 from io import BytesIO
@@ -16,9 +17,21 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Archivos de datos
 PERFILES_PATH = "perfiles.json"
 FLAGS_PATH = "flags.json"
+DESAFIOS_PATH = "desafios.json"
 
 RANGOS = ["F", "E", "D", "C", "B", "A", "S", "SS", "SSS"]
 
+XP_RANGOS = {
+    "F": 0,
+    "E": 1000,
+    "D": 2500,
+    "C": 5000,
+    "B": 10000,
+    "A": 20000,
+    "S": 40000,
+    "SS": 400000,
+    "SSS": 560000
+}
 # ========================= UTILIDADES ==============================
 def cargar_datos(path):
     if not os.path.exists(path):
@@ -32,27 +45,34 @@ def guardar_datos(path, data):
         json.dump(data, f, indent=4)
 
 def calcular_rango(xp):
-    nivel = xp // 100
-    if nivel >= len(RANGOS):
-        return RANGOS[-1]
-    return RANGOS[nivel]
+    # Ordenar los rangos de mayor a menor XP requerida
+    for rango, xp_necesaria in sorted(XP_RANGOS.items(), key=lambda item: item[1], reverse=True):
+        if xp >= xp_necesaria:
+            return rango
+    return "F"  # Valor por defecto si no cumple ninguno
 
-async def actualizar_rango_y_rol(member, perfil):
+async def actualizar_rango_y_rol(miembro, perfil):
     xp = perfil["xp"]
+    guild = miembro.guild
+
+    rango_anterior = perfil.get("rango", "F")
     nuevo_rango = calcular_rango(xp)
+    perfil["rango"] = nuevo_rango
 
-    if perfil.get("rango") != nuevo_rango:
-        perfil["rango"] = nuevo_rango
+    if nuevo_rango != rango_anterior:
+        rol_anterior = get(guild.roles, name=rango_anterior)
+        if rol_anterior and rol_anterior in miembro.roles:
+            await miembro.remove_roles(rol_anterior)
 
-        # Remover roles anteriores si son de rango
-        roles_rango = [r for r in member.roles if r.name in RANGOS]
-        for rol in roles_rango:
-            await member.remove_roles(rol)
+        rol_nuevo = get(guild.roles, name=nuevo_rango)
+        if rol_nuevo:
+            await miembro.add_roles(rol_nuevo)
 
-        # Asignar nuevo rol si existe
-        guild_roles = {r.name: r for r in member.guild.roles}
-        if nuevo_rango in guild_roles:
-            await member.add_roles(guild_roles[nuevo_rango])
+        canal_anuncios = get(guild.text_channels, name="comandos-del-bot")
+        if canal_anuncios:
+            await canal_anuncios.send(
+                f"🏅 {miembro.mention} ha ascendido de `{rango_anterior}` a `{nuevo_rango}` con {xp} XP. ¡Felicidades!"
+            )
 
 from PIL import Image, ImageDraw, ImageFont
 import os
@@ -71,13 +91,8 @@ def crear_imagen_perfil(nombre, rango, xp, nivel, avatar_path, insignia_path, ou
         "S": {"fondo": (60, 60, 90), "borde": (40, 40, 70), "barra_bg": (80, 80, 110), "barra_fg": (150, 150, 255)},
         "SS": {"fondo": (90, 70, 40), "borde": (70, 50, 30), "barra_bg": (110, 90, 60), "barra_fg": (255, 180, 100)},
         "SSS": {"fondo": (100, 60, 60), "borde": (80, 40, 40), "barra_bg": (130, 70, 70), "barra_fg": (255, 120, 120)},
-        "Gran Maestro": {"fondo": (40, 30, 60), "borde": (30, 20, 50), "barra_bg": (0, 0, 0), "barra_fg": (0, 0, 0)}
-    }
-
-    XP_POR_RANGO = {
-        "F": 5000, "E": 7000, "D": 9000, "C": 11000,
-        "B": 13000, "A": 15000, "S": 18000, "SS": 20000,
-        "SSS": 25000, "Gran Maestro": None
+        "Gran Maestro": {"fondo": (40, 30, 60), "borde": (30, 20, 50), "barra_bg": (0, 0, 0), "barra_fg": (0, 0, 0)},
+        "Root": {"fondo": (20, 30, 25), "borde": (15, 25, 20), "barra_bg": (0, 0, 0), "barra_fg": (0, 0, 0)}
     }
 
     estilo = ESTILOS_RANGOS.get(rango, ESTILOS_RANGOS["F"])
@@ -119,17 +134,24 @@ def crear_imagen_perfil(nombre, rango, xp, nivel, avatar_path, insignia_path, ou
     draw.text((x_texto, y_base), f"Rango: {rango}", font=fuente_texto, fill=color_texto)
     y_base += 25
 
-    if rango == "Gran Maestro":
+
+    if rango in ["Root", "Gran Maestro"]:
         texto_xp = "∞ XP (∞ Nivel)"
         mostrar_barra = False
     else:
         texto_xp = f"XP: {xp} (Nivel {nivel})"
         mostrar_barra = True
+
     draw.text((x_texto, y_base), texto_xp, font=fuente_texto, fill=color_texto)
 
+    
     if mostrar_barra:
-        xp_max = XP_POR_RANGO.get(rango, 1000)
-        xp_relativa = xp % xp_max
+        xp_max = XP_RANGOS.get(rango)
+        if not xp_max or xp_max == 0:
+            xp_relativa = 0
+            xp_max = 1  # evitar división por cero
+        else:
+            xp_relativa = xp % xp_max
         largo_max = ancho_total - x_texto - margen
         largo_barra = int((xp_relativa / xp_max) * largo_max)
         alto_barra = 14
@@ -150,31 +172,94 @@ def crear_imagen_perfil(nombre, rango, xp, nivel, avatar_path, insignia_path, ou
 # ========================= EVENTOS Y COMANDOS ==========================
 # comando para completar una bandera
 @bot.command()
-async def flag(ctx, *, codigo):  # El * captura todo lo que venga después como string completa, incluyendo espacios
-    codigo = codigo.strip()  # Quitamos espacios al principio y final
-
-    perfiles = cargar_datos(PERFILES_PATH)
-    flags = cargar_datos(FLAGS_PATH)
+async def flag(ctx, *, codigo):
+    codigo = codigo.strip().upper()
     user_id = str(ctx.author.id)
 
-    if codigo in flags:
-        if user_id not in perfiles:
-            perfiles[user_id] = {"xp": 0, "flags": [], "rango": "F"}
+    # Verificación de canal (insensible a mayúsculas)
+    if ctx.guild and ctx.channel.name.lower() != "enviar-flag":
+        await ctx.send("❌ Este comando solo puede usarse en el canal `#enviar-flag`.")
+        return
 
-        if codigo in perfiles[user_id]["flags"]:
-            await ctx.send(f"Ya has enviado esta flag, {ctx.author.mention}.")
-            return
+    # Intentar borrar el mensaje original del usuario
+    if ctx.guild:
+        try:
+            await ctx.message.delete()
+        except discord.Forbidden:
+            try:
+                await ctx.author.send("⚠️ No pude borrar tu mensaje. Por favor, elimínalo manualmente para evitar spoilers.")
+            except discord.Forbidden:
+                pass  # No se puede contactar al usuario
 
-        xp_ganada = flags[codigo]
-        perfiles[user_id]["xp"] += xp_ganada
-        perfiles[user_id]["flags"].append(codigo)
+    # Cargar datos con manejo de errores
+    try:
+        perfiles = cargar_datos(PERFILES_PATH)
+        flags = cargar_datos(FLAGS_PATH)
+    except FileNotFoundError:
+        try:
+            await ctx.author.send("⚠️ No se pudo acceder a los datos necesarios.")
+        except discord.Forbidden:
+            pass
+        return
 
-        await actualizar_rango_y_rol(ctx.author, perfiles[user_id])
+    if codigo not in flags:
+        try:
+            await ctx.author.send("❌ Flag no válida.")
+        except discord.Forbidden:
+            pass
+        return
 
-        guardar_datos(PERFILES_PATH, perfiles)
-        await ctx.send(f"✅ Flag aceptada, ganaste {xp_ganada} XP ✨")
+    # Datos de la flag
+    flag_data = flags[codigo]
+    nombre_flag = flag_data["nombre"]
+    xp_base = flag_data["xp"]
+    rango_flag = flag_data.get("rango", "F")
+
+    # Crear perfil si no existe
+    if user_id not in perfiles:
+        perfiles[user_id] = {"xp": 0, "flags": [], "rango": "F"}
+
+    if nombre_flag in perfiles[user_id]["flags"]:
+        try:
+            await ctx.author.send("⚠️ Ya has enviado esta flag.")
+        except discord.Forbidden:
+            pass
+        return
+
+    # Comparar rango del usuario con el de la flag
+    RANGOS = ["F", "E", "D", "C", "B", "A", "S", "SS", "SSS"]
+    rango_usuario = perfiles[user_id].get("rango", "F")
+
+    try:
+        idx_usuario = RANGOS.index(rango_usuario)
+        idx_flag = RANGOS.index(rango_flag)
+    except ValueError:
+        idx_usuario = idx_flag = 0  # Fallback por seguridad
+
+    # Cálculo de XP con bonificaciones
+    if idx_usuario < idx_flag:
+        xp_final = int(xp_base * 1.2)
+        detalle = " (+20% bonus por menor rango)"
+    elif idx_usuario > idx_flag:
+        xp_final = int(xp_base * 0.8)
+        detalle = " (–20% por mayor rango)"
     else:
-        await ctx.send("❌ Flag no válida.")
+        xp_final = xp_base
+        detalle = ""
+
+    # Registrar flag y XP
+    perfiles[user_id]["xp"] += xp_final
+    perfiles[user_id]["flags"].append(nombre_flag)
+    await actualizar_rango_y_rol(ctx.author, perfiles[user_id])
+    guardar_datos(PERFILES_PATH, perfiles)
+
+    # Enviar resultado por DM
+    try:
+        await ctx.author.send(f"✅ Flag aceptada: **{nombre_flag}**.\nGanaste {xp_final} XP{detalle} ✨")
+    except discord.Forbidden:
+        await ctx.send(f"{ctx.author.mention}, no pude enviarte un DM. Asegúrate de tener los mensajes privados activados.")
+
+
 # comando para mostrar el perfil de un usuario
 @bot.command()
 async def perfil(ctx):
@@ -238,7 +323,8 @@ async def reglas(ctx):
         "3. 🗣️ **No spam, ni flood**: Cuida los canales del gremio.\n"
         "4. 🧠 **Aprende y comparte**: Ayuda a tus compañeros.\n"
         "5. ⚖️ **El Gran Maestro tiene la última palabra**: Las decisiones administrativas son finales.\n"
-        "6. ⚖️ **No se permite magia**: Las flag las tienes que sacar tu si alguen te la chiva sera perma ban para los dos.\n"
+        "6. ❌ **No se permite magia**: Las flag las tienes que sacar tu si alguen te la chiva sera perma ban para los dos.\n"
+        "7. **No a los walthougth**: solo se permiten hacer para mandarlos a los administradores para que ellos valoren tu trabajo nada mas.\n"
         "\n"
         "Cualquier violación será castigada por los guardianes del gremio."
     )
@@ -249,20 +335,26 @@ async def reglas(ctx):
     )
     embed.set_footer(text="Que el código os guíe.")
     await ctx.send(embed=embed)
-# comando de la guia de usuarios normales
+#comando para que los usuarios vean sus flags
 @bot.command()
-async def guia(ctx):
-    text = (
-        "1. Utiliza !reglas para ver las reglas de esta mecanica.\n"
-        "2. Utiliza !perfil para ver tu perfil con tu xp y tu rango actual\n"
-        "3. Con el comando !flag y la bandera podras ganar XP para subir de rango"
-    )
+async def misflags(ctx):
+    """Muestra las flags recogidas por el jugador."""
+    profiles = cargar_datos(PERFILES_PATH)
+    user_id = str(ctx.author.id)
+
+    if user_id not in profiles or not profiles[user_id]["flags"]:
+        await ctx.send("❕ Aún no tienes flags recogidas.")
+        return
+
+    flags = profiles[user_id]["flags"]  # Esto tiene NOMBRES de flags
+
+    lista = "\n".join([f"🏁 {flag}" for flag in flags])
+
     embed = discord.Embed(
-        title ="📜 Guia del Gremio",
-        description=text,
-        color=0x8B4513
+        title=f"Flags recogidas de {ctx.author.display_name}",
+        description=lista,
+        color=discord.Colour.green()
     )
-    embed.set_footer(text="Mucho animo a disfrutar y aprender.")
     await ctx.send(embed=embed)
 #comando para bajar de rango a un usuario
 @bot.command()
@@ -289,13 +381,24 @@ async def ver_flags(ctx):
     try:
         with open("flags.json", "r") as f:
             flags = json.load(f)
+
         if not flags:
             await ctx.send("🚫 No hay flags activas.")
-        else:
-            lista = "\n".join([f"- `{nombre}`" for nombre in flags])
-            await ctx.send(f"🏁 **Flags activas:**\n{lista}")
+            return
+
+        mensaje = "🏁 **Flags activas:**\n\n"
+        for codigo, datos in flags.items():
+            nombre = datos.get("nombre", "Sin nombre")
+            xp = datos.get("xp", 0)
+            rango = datos.get("rango", "F")
+            creador = datos.get("creador", "Desconocido")
+            mensaje += f"🔹 `{codigo}` - `{nombre}` | 💠 Rango: `{rango}` | ⭐ XP: `{xp}` | 👤 Creador: `{creador}`\n"
+
+        await ctx.send(mensaje)
+
     except FileNotFoundError:
         await ctx.send("❌ El archivo de flags no existe.")
+
 # Comando para borrar baderas
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -316,20 +419,57 @@ async def borrar_flag(ctx, nombre_flag):
 #Comando para agregar una bandera nueva
 @bot.command()
 @commands.has_permissions(administrator=True)
-async def agregarflag(ctx, *, codigo_xp):
+async def agregarflag(ctx, *, argumentos):
     try:
-        codigo, xp = codigo_xp.rsplit(' ', 1)  # Separa por último espacio para obtener código y XP
-        codigo = codigo.strip()
-        xp = int(xp)
-    except Exception:
-        await ctx.send("Formato incorrecto. Usa: !agregarflag <codigo> <xp>")
+        # Separar partes usando "|"
+        parte_codigo_xp_rango, nombre = argumentos.split("|", 1)
+        partes = parte_codigo_xp_rango.strip().split()
+
+        if len(partes) < 3:
+            raise ValueError("Faltan argumentos.")
+
+        codigo = partes[0].strip().upper()
+        xp = int(partes[1])
+        rango = partes[2].upper()
+        nombre = nombre.strip()
+
+    except ValueError:
+        await ctx.send(
+            "❌ Formato incorrecto. Usa: `!agregarflag <codigo> <xp> <rango> | <nombre>`\n"
+            "Ejemplo: `!agregarflag FLAG123 50 D | Desafío de decodificación`"
+        )
+        return
+
+    if xp <= 0:
+        await ctx.send("❌ El valor de XP debe ser un número entero positivo.")
+        return
+
+    RANGOS_VALIDOS = ["F", "E", "D", "C", "B", "A", "S", "SS", "SSS"]
+    if rango not in RANGOS_VALIDOS:
+        await ctx.send(f"❌ Rango no válido. Usa uno de: {', '.join(RANGOS_VALIDOS)}")
         return
 
     flags = cargar_datos(FLAGS_PATH)
-    flags[codigo] = xp
-    guardar_datos(FLAGS_PATH, flags)
-    await ctx.send(f"Flag `{codigo}` añadida con {xp} XP.")
 
+    if codigo in flags:
+        await ctx.send(
+            f"⚠️ La flag `{codigo}` ya existe con el nombre `{flags[codigo]['nombre']}`. "
+            "Usa otro código o elimínala primero con `!borrar_flag`."
+        )
+        return
+
+    # Guardar la nueva flag
+    flags[codigo] = {
+        "xp": xp,
+        "nombre": nombre,
+        "rango": rango
+    }
+
+    guardar_datos(FLAGS_PATH, flags)
+
+    await ctx.send(
+        f"✅ Flag `{codigo}` añadida con {xp} XP, rango `{rango}` y nombre: `{nombre}`."
+    )
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -382,22 +522,23 @@ async def setup_canales(ctx):
     if not categoria_gm:
         categoria_gm = await guild.create_category("Gran Maestro", overwrites={
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            rol_gm: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            rol_gm: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
         })
         await ctx.send("📁 Categoría `Gran Maestro` creada.")
 
-    # Crear canales de texto y voz por rango (excepto Gran Maestro)
+    # Crear canales de texto y voz por rango
     colores_por_rango = {
-    "F": discord.Colour.from_rgb(120, 120, 120),
-    "E": discord.Colour.from_rgb(90, 150, 180),
-    "D": discord.Colour.from_rgb(70, 180, 90),
-    "C": discord.Colour.from_rgb(255, 210, 80),
-    "B": discord.Colour.from_rgb(255, 165, 0),
-    "A": discord.Colour.from_rgb(255, 100, 100),
-    "S": discord.Colour.from_rgb(160, 100, 255),
-    "SS": discord.Colour.from_rgb(100, 200, 255),
-    "SSS": discord.Colour.from_rgb(255, 255, 255)
+        "F": discord.Colour.from_rgb(120, 120, 120),
+        "E": discord.Colour.from_rgb(90, 150, 180),
+        "D": discord.Colour.from_rgb(70, 180, 90),
+        "C": discord.Colour.from_rgb(255, 210, 80),
+        "B": discord.Colour.from_rgb(255, 165, 0),
+        "A": discord.Colour.from_rgb(255, 100, 100),
+        "S": discord.Colour.from_rgb(160, 100, 255),
+        "SS": discord.Colour.from_rgb(100, 200, 255),
+        "SSS": discord.Colour.from_rgb(255, 255, 255)
     }
+
     for rango in RANGOS:
         # Crear rol
         rol = discord.utils.get(guild.roles, name=rango)
@@ -420,7 +561,8 @@ async def setup_canales(ctx):
         if not categoria:
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                rol: discord.PermissionOverwrite(view_channel=True)
+                rol: discord.PermissionOverwrite(view_channel=True),
+                rol_gm: discord.PermissionOverwrite(view_channel=True, send_messages=True)
             }
             categoria = await guild.create_category(f"Rango {rango}", overwrites=overwrites)
             await ctx.send(f"📂 Categoría `Rango {rango}` creada.")
@@ -433,7 +575,8 @@ async def setup_canales(ctx):
                 category=categoria,
                 overwrites={
                     guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                    rol: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+                    rol: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+                    rol_gm: discord.PermissionOverwrite(view_channel=True, send_messages=True)
                 }
             )
 
@@ -445,55 +588,98 @@ async def setup_canales(ctx):
                 category=categoria,
                 overwrites={
                     guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                    rol: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True)
+                    rol: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True),
+                    rol_gm: discord.PermissionOverwrite(view_channel=True, connect=True, speak=True)
                 }
             )
 
-    # Canal: comandos-admin (solo para Gran Maestro)
+    # Canal: comandos-admin
     nombre_canal_admin = "comandos-admin"
     canal_admin = discord.utils.get(guild.text_channels, name=nombre_canal_admin)
     if not canal_admin:
         overwrites_admin = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            rol_gm: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            rol_gm: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
         }
-        await guild.create_text_channel(
+        canal_admin = await guild.create_text_channel(
             nombre_canal_admin,
             overwrites=overwrites_admin,
+            category=categoria_gm,
             topic="Canal para comandos administrativos del bot."
         )
         await ctx.send("🛠 Canal `comandos-admin` creado correctamente.")
+    else:
+        await canal_admin.edit(category=categoria_gm)
 
-    # Canal: enviar-flag (visible para todos, sin lectura, solo escritura)
+    # Canal: enviar-flag
     nombre_canal_flag = "enviar-flag"
     canal_flag = discord.utils.get(guild.text_channels, name=nombre_canal_flag)
+    overwrites_flag = {
+        guild.default_role: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_messages=False
+        ),
+        rol_gm: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_messages=True,
+            read_message_history=True
+        ),
+        guild.me: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_messages=True,
+            read_message_history=True
+        )
+    }
     if not canal_flag:
-        overwrites_flag = {
-            guild.default_role: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=False
-            ),
-            rol_gm: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=False
-            ),
-            guild.me: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True
-            )
-        }
         await guild.create_text_channel(
             nombre_canal_flag,
             overwrites=overwrites_flag,
-            topic="Escribe tu flag aquí. El bot te dirá si es correcta o incorrecta sin revelar tu mensaje."
+            topic="Escribe tu flag aquí. No podrás ver tu mensaje."
         )
         await ctx.send("📤 Canal `enviar-flag` creado correctamente.")
+    else:
+        await canal_flag.edit(overwrites=overwrites_flag)
 
-    await ctx.send("✅ Todos los canales, categorías y roles han sido creados correctamente.")
+    await ctx.send("✅ Todos los canales, categorías y roles han sido configurados correctamente.")
+    
+    # Crear canal de comandos para todos
+    canal_comandos = discord.utils.get(guild.text_channels, name="comandos")
+    if not canal_comandos:
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                send_messages=True, view_channel=True, read_message_history=True
+            ),
+            guild.me: discord.PermissionOverwrite(send_messages=True)
+        }
+        canal_comandos = await guild.create_text_channel("comandos", overwrites=overwrites)
+@bot.command(hidden=True)
+@commands.has_permissions(administrator=True)
+async def grantroot(ctx, miembro: discord.Member):
+    guild = ctx.guild
+    perfiles = cargar_datos(PERFILES_PATH)
+    user_id = str(miembro.id)
+
+    # Crear rol Root si no existe
+    rol_nombre = "Root"
+    rol = discord.utils.get(guild.roles, name=rol_nombre)
+    if not rol:
+        rol = await guild.create_role(name=rol_nombre)
+        await ctx.send(f"🎖️ Rol `{rol_nombre}` creado.")
+
+    # Asignar el rol
+    await miembro.add_roles(rol)
+    await ctx.send(f"👑 {miembro.mention} ahora es un **Root**.")
+
+    # Actualizar el perfil
+    if user_id not in perfiles:
+        perfiles[user_id] = {"xp": 0, "flags": [], "rango": "F"}
+
+    perfiles[user_id]["rango"] = rol_nombre
+    guardar_datos(PERFILES_PATH, perfiles)
 
 # ========================= TOKEN ==============================
 

@@ -1,4 +1,12 @@
 {
-    "44563": 100000,
-    "test": 200
+    "DELTABRAVO": {
+        "xp": 100,
+        "nombre": "desafio de la droga",
+        "rango": "F"
+    },
+    "DELTA12": {
+        "xp": 1200,
+        "nombre": "el desafio",
+        "rango": "F"
+    }
 }
