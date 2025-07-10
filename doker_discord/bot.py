@@ -4,6 +4,7 @@ from discord.utils import get
 from PIL import Image, ImageDraw, ImageFont
 import json, os, requests
 from io import BytesIO
+from datetime import datetime
 
 intents = discord.Intents.default()
 intents.messages = True
@@ -656,30 +657,149 @@ async def setup_canales(ctx):
             guild.me: discord.PermissionOverwrite(send_messages=True)
         }
         canal_comandos = await guild.create_text_channel("comandos", overwrites=overwrites)
+
 @bot.command(hidden=True)
 @commands.has_permissions(administrator=True)
 async def grantroot(ctx, miembro: discord.Member):
     guild = ctx.guild
     perfiles = cargar_datos(PERFILES_PATH)
     user_id = str(miembro.id)
-
-    # Crear rol Root si no existe
     rol_nombre = "Root"
+
+    # Crear rol si no existe
     rol = discord.utils.get(guild.roles, name=rol_nombre)
     if not rol:
-        rol = await guild.create_role(name=rol_nombre)
-        await ctx.send(f"🎖️ Rol `{rol_nombre}` creado.")
+        try:
+            rol = await guild.create_role(name=rol_nombre, colour=discord.Colour.red())
+            await ctx.send(f"🎖️ Rol `{rol_nombre}` creado.")
+        except discord.Forbidden:
+            return await ctx.send("❌ No tengo permisos para crear roles.")
+        except discord.HTTPException as e:
+            return await ctx.send(f"❌ Error al crear el rol: {e}")
 
-    # Asignar el rol
-    await miembro.add_roles(rol)
-    await ctx.send(f"👑 {miembro.mention} ahora es un **Root**.")
+    # Asignar rol si no lo tiene
+    if rol not in miembro.roles:
+        await miembro.add_roles(rol)
+        await ctx.send(f"👑 {miembro.mention} ahora es un **Root**.")
+    else:
+        await ctx.send(f"⚠️ {miembro.mention} ya tiene el rol **Root**.")
 
-    # Actualizar el perfil
+    # Actualizar perfil
     if user_id not in perfiles:
         perfiles[user_id] = {"xp": 0, "flags": [], "rango": "F"}
 
     perfiles[user_id]["rango"] = rol_nombre
     guardar_datos(PERFILES_PATH, perfiles)
+
+# ======================== DESAFIOS ===========================
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def agregar_desafio(ctx, codigo, nombre, xp: int, rango, empieza, expira, *, descripcion):
+    try:
+        # Validaciones
+        codigo = codigo.strip().upper()
+        nombre = nombre.strip()
+        rango = rango.strip().upper()
+
+        # Verificar formato de fecha
+        datetime.strptime(empieza, "%Y-%m-%d")
+        datetime.strptime(expira, "%Y-%m-%d")
+
+        # Cargar y guardar desafío
+        desafios = cargar_datos(DESAFIOS_PATH)
+
+        desafios[codigo] = {
+            "nombre": nombre,
+            "descripcion": descripcion,
+            "xp": xp,
+            "rango": rango,
+            "empieza": empieza,
+            "expira": expira
+        }
+
+        guardar_datos(DESAFIOS_PATH, desafios)
+        await ctx.send(
+            f"✅ Desafío **{nombre}** (`{codigo}`) agregado correctamente.\n"
+            f"🕓 Vigencia: {empieza} → {expira}"
+        )
+
+    except ValueError:
+        await ctx.send(
+            "❌ Formato incorrecto. Asegúrate de usar el comando así:\n\n"
+            "**!agregar_desafio `<codigo>` `<nombre>` `<xp>` `<rango>` `<empieza>` `<expira>` `<descripción>`**\n\n"
+            "**Ejemplo:**\n"
+            "`!agregar_desafio FLAG123 \"Caza del Hacker\" 200 B 2025-06-20 2025-06-27 Descubre al atacante oculto en los logs.`"
+        )
+
+@bot.command()
+async def desafio(ctx, *, codigo):
+    codigo = codigo.strip().upper()
+    user_id = str(ctx.author.id)
+
+    desafios = cargar_datos(DESAFIOS_PATH)
+    perfiles = cargar_datos(PERFILES_PATH)
+
+    if codigo not in desafios:
+        await ctx.author.send("❌ Desafío no válido.")
+        return
+
+    desafio_data = desafios[codigo]
+    ahora = datetime.now()
+    fecha_empieza = datetime.strptime(desafio_data["empieza"], "%Y-%m-%d")
+    fecha_expira = datetime.strptime(desafio_data["expira"], "%Y-%m-%d")
+
+    if ahora < fecha_empieza:
+        dias_faltan = (fecha_empieza - ahora).days
+        await ctx.author.send(f"🕓 Este desafío aún no está disponible. Comienza en {dias_faltan} días.")
+        return
+
+    if ahora > fecha_expira:
+        await ctx.author.send("⚠️ Este desafío ha expirado.")
+        return
+
+    if user_id not in perfiles:
+        perfiles[user_id] = {"xp": 0, "flags": [], "rango": "F", "desafios": []}
+
+    if "desafios" not in perfiles[user_id]:
+        perfiles[user_id]["desafios"] = []
+
+    if codigo in perfiles[user_id]["desafios"]:
+        await ctx.author.send("⚠️ Ya has completado este desafío.")
+        return
+
+    perfiles[user_id]["xp"] += desafio_data["xp"]
+    perfiles[user_id]["desafios"].append(codigo)
+    guardar_datos(PERFILES_PATH, perfiles)
+
+    await ctx.author.send(f"✅ Desafío completado: **{desafio_data['nombre']}**. Ganaste {desafio_data['xp']} XP ✨")
+
+@bot.command()
+async def desafios(ctx):
+    desafios = cargar_datos(DESAFIOS_PATH)
+    mensaje = "**📌 Desafíos activos y próximos:**\n\n"
+    ahora = datetime.now()
+
+    for codigo, data in desafios.items():
+        nombre = data["nombre"]
+        descripcion = data.get("descripcion", "Sin descripción.")
+        fecha_empieza = datetime.strptime(data["empieza"], "%Y-%m-%d")
+        fecha_expira = datetime.strptime(data["expira"], "%Y-%m-%d")
+
+        if ahora > fecha_expira:
+            continue
+
+        if ahora < fecha_empieza:
+            dias_faltan = (fecha_empieza - ahora).days
+            mensaje += f"🔒 **{nombre}**\n"
+            mensaje += f"🔸 {descripcion}\n"
+            mensaje += f"🕓 Disponible en: {dias_faltan} días (del {fecha_empieza.date()} al {fecha_expira.date()})\n\n"
+        else:
+            dias_restantes = (fecha_expira - ahora).days
+            mensaje += f"🧩 **{nombre}** (`{codigo}`)\n"
+            mensaje += f"🔸 {descripcion}\n"
+            mensaje += f"⏳ Termina en: {dias_restantes} días (hasta el {fecha_expira.date()})\n\n"
+
+    await ctx.send(mensaje or "No hay desafíos activos ni programados.")
 
 # ========================= TOKEN ==============================
 
